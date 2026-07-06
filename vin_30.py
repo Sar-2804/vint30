@@ -1,142 +1,806 @@
+# ==========================================
+# Instagram Clone - Part 1
+# app.py
+# ==========================================
+
 import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
+import sqlite3
+import hashlib
+import os
+import uuid
+from datetime import datetime
+from PIL import Image
 
-# -------------------------------
-# PAGE CONFIG
-# -------------------------------
-st.set_page_config(page_title="SIR Simulator", layout="wide")
+# ------------------------------------------
+# Page Config
+# ------------------------------------------
 
-# -------------------------------
-# TITLE
-# -------------------------------
-st.title("🦠 Flu Outbreak Simulator (SIR Model)")
-st.markdown("Interactive Epidemiology Dashboard")
+st.set_page_config(
+    page_title="Instagram Clone",
+    page_icon="📸",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# -------------------------------
-# SIDEBAR
-# -------------------------------
-st.sidebar.header("🔧 Parameters")
+# ------------------------------------------
+# Folders
+# ------------------------------------------
 
-population = st.sidebar.slider("Population", 100, 5000, 1000)
-initial_infected = st.sidebar.slider("Initial Infected", 1, 100, 10)
+UPLOAD_FOLDER = "uploads"
+PROFILE_FOLDER = "profiles"
 
-beta = st.sidebar.slider("Infection Rate (β)", 0.0, 1.0, 0.3)
-gamma = st.sidebar.slider("Recovery Rate (γ)", 0.01, 1.0, 0.1)
-vaccination = st.sidebar.slider("Vaccination Rate", 0.0, 0.5, 0.05)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
-days = st.sidebar.slider("Days", 10, 200, 100)
+# ------------------------------------------
+# Database
+# ------------------------------------------
 
-# -------------------------------
-# SIR MODEL
-# -------------------------------
-def run_sir(beta, gamma, v):
-    S = population - initial_infected
-    I = initial_infected
-    R = 0
+conn = sqlite3.connect(
+    "instagram.db",
+    check_same_thread=False
+)
 
-    S_list, I_list, R_list = [S], [I], [R]
+cursor = conn.cursor()
 
-    for _ in range(days):
-        new_S = S - (beta * S * I / population) - (v * S)
-        new_I = I + (beta * S * I / population) - (gamma * I)
-        new_R = R + (gamma * I) + (v * S)
+# ------------------------------------------
+# Users Table
+# ------------------------------------------
 
-        # Fix negatives
-        new_S = max(0, new_S)
-        new_I = max(0, new_I)
-        new_R = max(0, new_R)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users(
 
-        # Normalize population
-        total = new_S + new_I + new_R
-        if total > 0:
-            new_S *= population / total
-            new_I *= population / total
-            new_R *= population / total
+id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-        S, I, R = new_S, new_I, new_R
+username TEXT UNIQUE,
 
-        S_list.append(S)
-        I_list.append(I)
-        R_list.append(R)
+fullname TEXT,
 
-    return S_list, I_list, R_list
+email TEXT UNIQUE,
 
-# -------------------------------
-# RUN MODEL
-# -------------------------------
-S, I, R = run_sir(beta, gamma, vaccination)
+password TEXT,
 
-# -------------------------------
-# GRAPH 1
-# -------------------------------
-st.subheader("📊 Infection Curve")
+bio TEXT DEFAULT '',
 
-fig, ax = plt.subplots()
-ax.plot(I, label="Infected", color="red")
-ax.set_xlabel("Days")
-ax.set_ylabel("People")
-ax.legend()
+profile_pic TEXT DEFAULT '',
 
-st.pyplot(fig, use_container_width=True)
+followers INTEGER DEFAULT 0,
 
-# -------------------------------
-# GRAPH 2 (FULL SIR)
-# -------------------------------
-st.subheader("📊 SIR Model")
+following INTEGER DEFAULT 0,
 
-fig2, ax2 = plt.subplots()
-ax2.plot(S, label="Susceptible", color="blue")
-ax2.plot(I, label="Infected", color="red")
-ax2.plot(R, label="Recovered", color="green")
+joined TEXT
 
-ax2.legend()
-st.pyplot(fig2, use_container_width=True)
-
-# -------------------------------
-# METRICS
-# -------------------------------
-st.subheader("📈 Metrics")
-
-R0 = beta / gamma if gamma != 0 else 0
-peak = max(I)
-peak_day = int(np.argmax(I))
-
-col1, col2, col3 = st.columns(3)
-col1.metric("R₀", f"{R0:.2f}")
-col2.metric("Peak Infected", round(peak))
-col3.metric("Peak Day", peak_day)
-
-# -------------------------------
-# STATUS
-# -------------------------------
-st.subheader("📉 Outbreak Status")
-
-if peak < population * 0.2:
-    st.success("Curve Flattened ✅")
-elif peak < population * 0.5:
-    st.warning("Moderate Spread ⚠️")
-else:
-    st.error("Severe Outbreak ❌")
-
-# -------------------------------
-# DOWNLOAD DATA
-# -------------------------------
-df = pd.DataFrame({"S": S, "I": I, "R": R})
-st.download_button("⬇️ Download Data", df.to_csv(index=False), "sir_data.csv")
-
-# -------------------------------
-# INFO
-# -------------------------------
-st.subheader("📘 About")
-
-st.write("""
-This app simulates disease spread using the SIR model.
-
-- S → Susceptible  
-- I → Infected  
-- R → Recovered  
-
-R₀ determines how fast the disease spreads.
+)
 """)
+
+# ------------------------------------------
+# Posts Table
+# ------------------------------------------
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS posts(
+
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+username TEXT,
+
+image TEXT,
+
+caption TEXT,
+
+likes INTEGER DEFAULT 0,
+
+created TEXT
+
+)
+""")
+
+# ------------------------------------------
+# Comments Table
+# ------------------------------------------
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS comments(
+
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+post_id INTEGER,
+
+username TEXT,
+
+comment TEXT,
+
+created TEXT
+
+)
+""")
+
+# ------------------------------------------
+# Followers Table
+# ------------------------------------------
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS follows(
+
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+follower TEXT,
+
+following TEXT
+
+)
+""")
+
+conn.commit()
+
+# ------------------------------------------
+# Password Hash
+# ------------------------------------------
+
+def hash_password(password):
+
+    return hashlib.sha256(
+        password.encode()
+    ).hexdigest()
+
+# ------------------------------------------
+# User Exists
+# ------------------------------------------
+
+def user_exists(username):
+
+    cursor.execute(
+        "SELECT * FROM users WHERE username=?",
+        (username,)
+    )
+
+    return cursor.fetchone()
+
+# ------------------------------------------
+# Create User
+# ------------------------------------------
+
+def create_user(
+        username,
+        fullname,
+        email,
+        password
+):
+
+    cursor.execute(
+        """
+        INSERT INTO users(
+        username,
+        fullname,
+        email,
+        password,
+        joined
+        )
+
+        VALUES(?,?,?,?,?)
+        """,
+
+        (
+            username,
+            fullname,
+            email,
+            hash_password(password),
+            datetime.now().strftime(
+                "%d-%m-%Y %H:%M"
+            )
+        )
+    )
+
+    conn.commit()
+
+# ------------------------------------------
+# Login
+# ------------------------------------------
+
+def login(username,password):
+
+    cursor.execute(
+
+        """
+        SELECT *
+        FROM users
+
+        WHERE username=?
+
+        AND password=?
+        """,
+
+        (
+            username,
+            hash_password(password)
+        )
+
+    )
+
+    return cursor.fetchone()
+
+# ------------------------------------------
+# Upload Image
+# ------------------------------------------
+
+def save_image(file):
+
+    ext = file.name.split(".")[-1]
+
+    filename = str(uuid.uuid4()) + "." + ext
+
+    path = os.path.join(
+        UPLOAD_FOLDER,
+        filename
+    )
+
+    with open(path,"wb") as f:
+        f.write(file.read())
+
+    return path
+
+# ------------------------------------------
+# Profile Upload
+# ------------------------------------------
+
+def save_profile(file):
+
+    ext = file.name.split(".")[-1]
+
+    filename = str(uuid.uuid4()) + "." + ext
+
+    path = os.path.join(
+        PROFILE_FOLDER,
+        filename
+    )
+
+    with open(path,"wb") as f:
+        f.write(file.read())
+
+    return path
+
+# ------------------------------------------
+# Session
+# ------------------------------------------
+
+if "logged_in" not in st.session_state:
+
+    st.session_state.logged_in = False
+
+if "username" not in st.session_state:
+
+    st.session_state.username = ""
+
+# ------------------------------------------
+# Instagram CSS
+# ------------------------------------------
+
+st.markdown("""
+
+<style>
+
+body{
+
+background:#fafafa;
+
+}
+
+header{
+
+visibility:hidden;
+
+}
+
+footer{
+
+visibility:hidden;
+
+}
+
+#MainMenu{
+
+visibility:hidden;
+
+}
+
+.main{
+
+padding-top:0rem;
+
+}
+
+.logo{
+
+font-size:38px;
+
+font-weight:bold;
+
+text-align:center;
+
+font-family:cursive;
+
+margin-bottom:20px;
+
+}
+
+.card{
+
+background:white;
+
+padding:20px;
+
+border-radius:15px;
+
+box-shadow:0 2px 12px rgba(0,0,0,.08);
+
+margin-bottom:20px;
+
+}
+
+.profile{
+
+border-radius:50%;
+
+width:60px;
+
+height:60px;
+
+}
+
+.post{
+
+border-radius:12px;
+
+overflow:hidden;
+
+border:1px solid #ddd;
+
+}
+
+.like{
+
+color:red;
+
+font-size:20px;
+
+}
+
+.comment{
+
+background:#f2f2f2;
+
+padding:8px;
+
+border-radius:10px;
+
+margin-top:5px;
+
+}
+
+.follow{
+
+background:#0095f6;
+
+color:white;
+
+padding:8px;
+
+border-radius:8px;
+
+text-align:center;
+
+}
+
+input{
+
+border-radius:10px !important;
+
+}
+
+textarea{
+
+border-radius:10px !important;
+
+}
+
+button{
+
+border-radius:10px !important;
+
+background:#0095f6 !important;
+
+color:white !important;
+
+}
+
+</style>
+
+""",unsafe_allow_html=True)
+
+# ------------------------------------------
+# Logo
+# ------------------------------------------
+
+st.markdown(
+"<div class='logo'>Instagram</div>",
+unsafe_allow_html=True
+)
+
+# ------------------------------------------
+# Navigation
+# ------------------------------------------
+
+if st.session_state.logged_in:
+
+    menu = st.sidebar.radio(
+
+        "Menu",
+
+        [
+
+        "🏠 Home",
+
+        "➕ Upload",
+
+        "👤 Profile",
+
+        "🔍 Search",
+
+        "⚙ Settings",
+
+        "🚪 Logout"
+
+        ]
+
+    )
+
+else:
+
+    menu = st.sidebar.radio(
+
+        "Menu",
+
+        [
+
+        "Login",
+
+        "Sign Up"
+
+        ]
+
+    )
+    # ==========================================
+# Part 2 - Login & Signup
+# Continue below Part 1
+# ==========================================
+
+# -----------------------------
+# Login Screen
+# -----------------------------
+if not st.session_state.logged_in and menu == "Login":
+
+    st.markdown("## Welcome Back 👋")
+    st.write("Login to your Instagram account")
+
+    col1, col2, col3 = st.columns([1,2,1])
+
+    with col2:
+
+        username = st.text_input(
+            "Username",
+            placeholder="Enter username"
+        )
+
+        password = st.text_input(
+            "Password",
+            type="password"
+        )
+
+        login_btn = st.button(
+            "Login",
+            use_container_width=True
+        )
+
+        if login_btn:
+
+            if username == "" or password == "":
+
+                st.warning(
+                    "Please fill all fields."
+                )
+
+            else:
+
+                user = login(
+                    username,
+                    password
+                )
+
+                if user:
+
+                    st.session_state.logged_in = True
+                    st.session_state.username = username
+
+                    st.success(
+                        "Login successful!"
+                    )
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Invalid username or password."
+                    )
+
+    st.divider()
+
+    st.info(
+        "Don't have an account? Go to Sign Up."
+    )
+
+# -----------------------------
+# Signup Screen
+# -----------------------------
+elif not st.session_state.logged_in and menu == "Sign Up":
+
+    st.markdown("## Create New Account")
+
+    col1, col2, col3 = st.columns([1,2,1])
+
+    with col2:
+
+        fullname = st.text_input(
+            "Full Name"
+        )
+
+        username = st.text_input(
+            "Username"
+        )
+
+        email = st.text_input(
+            "Email"
+        )
+
+        password = st.text_input(
+            "Password",
+            type="password"
+        )
+
+        confirm = st.text_input(
+            "Confirm Password",
+            type="password"
+        )
+
+        create = st.button(
+            "Create Account",
+            use_container_width=True
+        )
+
+        if create:
+
+            if (
+                fullname == ""
+                or username == ""
+                or email == ""
+                or password == ""
+                or confirm == ""
+            ):
+
+                st.warning(
+                    "Please fill all fields."
+                )
+
+            elif password != confirm:
+
+                st.error(
+                    "Passwords do not match."
+                )
+
+            elif user_exists(username):
+
+                st.error(
+                    "Username already exists."
+                )
+
+            else:
+
+                try:
+
+                    create_user(
+                        username,
+                        fullname,
+                        email,
+                        password
+                    )
+
+                    st.success(
+                        "Account created successfully!"
+                    )
+
+                    st.balloons()
+
+                except sqlite3.IntegrityError:
+
+                    st.error(
+                        "Email already registered."
+                    )
+
+# -----------------------------
+# Logout
+# -----------------------------
+elif (
+    st.session_state.logged_in
+    and menu == "🚪 Logout"
+):
+
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+
+    st.success(
+        "Logged out successfully."
+    )
+
+    st.rerun()
+
+# -----------------------------
+# Placeholder Home
+# -----------------------------
+elif (
+    st.session_state.logged_in
+    and menu == "🏠 Home"
+):
+
+    st.title("🏠 Home Feed")
+
+    st.success(
+        f"Welcome @{st.session_state.username}"
+    )
+
+    st.write(
+        "Feed will be added in Part 3."
+    )
+
+# -----------------------------
+# Placeholder Upload
+# -----------------------------
+elif (
+    st.session_state.logged_in
+    and menu == "➕ Upload"
+):
+
+    st.title("Upload Post")
+
+    st.info(
+        "Upload feature coming in Part 3."
+    )
+
+# -----------------------------
+# Placeholder Profile
+# -----------------------------
+elif (
+    st.session_state.logged_in
+    and menu == "👤 Profile"
+):
+
+    st.title("My Profile")
+
+    cursor.execute(
+        """
+        SELECT fullname,
+               email,
+               bio,
+               followers,
+               following,
+               joined
+        FROM users
+        WHERE username=?
+        """,
+        (
+            st.session_state.username,
+        )
+    )
+
+    user = cursor.fetchone()
+
+    if user:
+
+        st.subheader(user[0])
+
+        st.write(
+            "**Username:**",
+            st.session_state.username
+        )
+
+        st.write(
+            "**Email:**",
+            user[1]
+        )
+
+        st.write(
+            "**Bio:**",
+            user[2]
+        )
+
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "Followers",
+            user[3]
+        )
+
+        c2.metric(
+            "Following",
+            user[4]
+        )
+
+        st.caption(
+            "Joined : " + user[5]
+        )
+
+# -----------------------------
+# Placeholder Search
+# -----------------------------
+elif (
+    st.session_state.logged_in
+    and menu == "🔍 Search"
+):
+
+    st.title("Search Users")
+
+    keyword = st.text_input(
+        "Search username"
+    )
+
+    if keyword:
+
+        cursor.execute(
+            """
+            SELECT username,
+                   fullname
+            FROM users
+            WHERE username LIKE ?
+            """,
+            (
+                "%" + keyword + "%",
+            )
+        )
+
+        users = cursor.fetchall()
+
+        if users:
+
+            for u in users:
+
+                with st.container():
+
+                    st.write(
+                        "👤",
+                        u[0]
+                    )
+
+                    st.caption(
+                        u[1]
+                    )
+
+                    st.divider()
+
+        else:
+
+            st.warning(
+                "No users found."
+            )
+
+# -----------------------------
+# Placeholder Settings
+# -----------------------------
+elif (
+    st.session_state.logged_in
+    and menu == "⚙ Settings"
+):
+
+    st.title("Settings")
+
+    st.info(
+        "Settings page will be added later."
+    )
